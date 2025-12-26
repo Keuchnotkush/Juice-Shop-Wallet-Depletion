@@ -4,7 +4,7 @@
 ### 1) Methodology
 
 1. **Recon / enumeration**
-   - Figured out our point of entry would be the new web 3 wallet accessible from ![Wallet](Evidence/WD/WD-0.png) ![1](Evidence/WD/WD-1.png)
+   - Figured out our point of entry would be the new web 3 wallet accessible from ![Wallet](/WD/WD-0.png) ![1](/WD/WD-1.png)
    - **Target :** Juice Shop Sepolia testnet smart contract (victim) at found in the source code : `0x413744D59d31AFDC2889aeE602636177805Bd7b0`.
 
 ---
@@ -105,13 +105,13 @@ function withdraw(uint256 _amount) {
 
 ---
 
-## 6) Evidence and aftermath :
-![2](Evidence/WD/WD-2.png)
-![3](Evidence/WD/WD-3.png)
-![4](Evidence/WD/WD-4.png)
-![5](Evidence/WD/WD-5.png)
-![6](Evidence/WD/WD-6.png)
-![7](Evidence/WD/WD-7.png)
+## 6)  and aftermath :
+![2](/WD/WD-2.png)
+![3](/WD/WD-3.png)
+![4](/WD/WD-4.png)
+![5](/WD/WD-5.png)
+![6](/WD/WD-6.png)
+![7](/WD/WD-7.png)
 
 - Everything can be found on-chain at : `0x1F0db224880Dcd7dAc8fedB0fb01Be9041bF7929`
   
