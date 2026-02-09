@@ -101,7 +101,7 @@ contract Attacker {
     function depositToVictim() external payable onlyOwner {
         if (msg.value == 0) revert InsufficientDeposit();
 
-        victim.deposit{value: msg.value}(address(this));
+        victim.ethdeposit{value: msg.value}(address(this));
         emit Deposited(msg.value, address(this));
     }
 
@@ -129,7 +129,7 @@ contract Attacker {
         if (msg.value == 0) revert InsufficientDeposit();
 
         // Deposit
-        victim.deposit{value: msg.value}(address(this));
+        victim.ethdeposit{value: msg.value}(address(this));
         emit Deposited(msg.value, address(this));
 
         // Exploit using the deposited amount as the per-call withdrawal

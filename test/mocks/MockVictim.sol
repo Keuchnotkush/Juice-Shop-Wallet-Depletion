@@ -14,7 +14,7 @@ contract MockVictim {
     mapping(address => uint256) private guard;
 
     /// @notice Deposit ETH for a given beneficiary.
-    function deposit(address _for) external payable {
+    function ethdeposit(address _for) external payable {
         balances[_for] += msg.value;
     }
 
